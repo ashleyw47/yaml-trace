@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "yamltrace"
+version = "0.1.0"
+description = "Trace which YAML file in a layered config stack sets a given key"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+authors = [{name = "ashleyw47"}]
+
+[project.scripts]
+yamltrace = "yamltrace.cli:main"
