@@ -1,11 +1,12 @@
 """A parser for the subset of YAML that config files actually use.
 
 Block mappings, block sequences (including the common `- key: value`
-shorthand), and plain/quoted scalars. No anchors, no tags, no flow
-collections, no multi-document streams. Pulling in a full YAML library
-for a tool this small felt worse than owning the indentation bookkeeping
-ourselves, and config files rarely reach for the exotic corners of the
-spec anyway.
+shorthand), plain/quoted scalars, and single-line flow collections
+(`[1, 2]`, `{a: 1}`). No anchors, no tags, no multi-document streams,
+no flow collections that span multiple lines. Pulling in a full YAML
+library for a tool this small felt worse than owning the indentation
+bookkeeping ourselves, and config files rarely reach for the exotic
+corners of the spec anyway.
 
 Every mapping remembers the source line of each of its keys, since that
 is the whole point of this tool: knowing not just a value but where it
@@ -124,7 +125,7 @@ def _parse_sequence(cursor, indent, filename):
 
         key_value = _split_key_value(rest)
         if key_value is None:
-            items.append(_parse_scalar(rest))
+            items.append(_parse_value(rest, lineno, filename))
             continue
 
         key, value_str = key_value
@@ -168,19 +169,31 @@ def _consume_mapping_entry(target, key, value_str, lineno, cursor, indent, filen
         else:
             target.set(key, None, lineno)
     else:
-        target.set(key, _parse_scalar(value_str), lineno)
+        target.set(key, _parse_value(value_str, lineno, filename), lineno)
 
 
 def _split_key_value(content):
-    """Split 'key: value' at the first unquoted top-level colon."""
+    """Split 'key: value' at the first unquoted, unnested top-level colon.
+
+    A colon inside a flow collection (`{a: 1}`, `[1, 2]`) doesn't count,
+    so a line whose whole content is a flow value -- e.g. a sequence
+    item `- {a: 1}` -- isn't mistaken for a 'key: value' pair.
+    """
     in_single = False
     in_double = False
+    depth = 0
     for i, ch in enumerate(content):
         if ch == "'" and not in_double:
             in_single = not in_single
         elif ch == '"' and not in_single:
             in_double = not in_double
-        elif ch == ":" and not in_single and not in_double:
+        elif in_single or in_double:
+            continue
+        elif ch in "[{":
+            depth += 1
+        elif ch in "]}":
+            depth = max(0, depth - 1)
+        elif ch == ":" and depth == 0:
             if i + 1 == len(content) or content[i + 1] in " \t":
                 key = _parse_scalar(content[:i])
                 return str(key), content[i + 1:].strip()
@@ -223,3 +236,148 @@ def _unescape_double(s):
             out.append(ch)
             i += 1
     return "".join(out)
+
+
+# Plain scalars inside flow collections stop at structural characters.
+# Values don't stop at ':' -- "08:00" is a legitimate plain scalar once
+# we're past the key -- but a bare key does, since that's how we know
+# where the key ends and the value begins.
+_FLOW_VALUE_STOP = ",{}[]"
+_FLOW_KEY_STOP = ",{}[]:"
+
+
+def _parse_value(text, lineno, filename):
+    """Parse the value half of 'key: value', dispatching to flow
+    collections when the value opens with `[` or `{`.
+    """
+    s = text.strip()
+    if s[:1] in ("[", "{"):
+        value, end = _parse_flow_value(s, 0, lineno, filename)
+        end = _skip_flow_ws(s, end)
+        if end != len(s):
+            raise YamlError(
+                f"unexpected content after flow collection: {s[end:]!r}", filename, lineno
+            )
+        return value
+    return _parse_scalar(s)
+
+
+def _skip_flow_ws(s, i):
+    while i < len(s) and s[i] in " \t":
+        i += 1
+    return i
+
+
+def _parse_flow_value(s, i, lineno, filename):
+    i = _skip_flow_ws(s, i)
+    if i >= len(s):
+        raise YamlError("unexpected end of flow collection", filename, lineno)
+    ch = s[i]
+    if ch == "[":
+        return _parse_flow_seq(s, i, lineno, filename)
+    if ch == "{":
+        return _parse_flow_map(s, i, lineno, filename)
+    if ch == '"':
+        return _parse_flow_double(s, i, filename, lineno)
+    if ch == "'":
+        return _parse_flow_single(s, i, filename, lineno)
+    start = i
+    while i < len(s) and s[i] not in _FLOW_VALUE_STOP:
+        i += 1
+    return _parse_scalar(s[start:i]), i
+
+
+def _parse_flow_key(s, i, filename, lineno):
+    i = _skip_flow_ws(s, i)
+    if i < len(s) and s[i] == '"':
+        value, i = _parse_flow_double(s, i, filename, lineno)
+        return str(value), i
+    if i < len(s) and s[i] == "'":
+        value, i = _parse_flow_single(s, i, filename, lineno)
+        return str(value), i
+    start = i
+    while i < len(s) and s[i] not in _FLOW_KEY_STOP:
+        i += 1
+    return str(_parse_scalar(s[start:i])), i
+
+
+def _parse_flow_double(s, i, filename, lineno):
+    i += 1
+    start = i
+    while i < len(s):
+        if s[i] == "\\" and i + 1 < len(s):
+            i += 2
+            continue
+        if s[i] == '"':
+            return _unescape_double(s[start:i]), i + 1
+        i += 1
+    raise YamlError("unterminated double-quoted string in flow collection", filename, lineno)
+
+
+def _parse_flow_single(s, i, filename, lineno):
+    i += 1
+    out = []
+    while i < len(s):
+        if s[i] == "'":
+            if i + 1 < len(s) and s[i + 1] == "'":
+                out.append("'")
+                i += 2
+                continue
+            return "".join(out), i + 1
+        out.append(s[i])
+        i += 1
+    raise YamlError("unterminated single-quoted string in flow collection", filename, lineno)
+
+
+def _parse_flow_seq(s, i, lineno, filename):
+    i += 1  # skip '['
+    items = YList()
+    i = _skip_flow_ws(s, i)
+    if i < len(s) and s[i] == "]":
+        return items, i + 1
+    while True:
+        value, i = _parse_flow_value(s, i, lineno, filename)
+        items.append(value)
+        i = _skip_flow_ws(s, i)
+        if i >= len(s):
+            raise YamlError("unterminated flow sequence", filename, lineno)
+        if s[i] == ",":
+            i = _skip_flow_ws(s, i + 1)
+            if i < len(s) and s[i] == "]":
+                return items, i + 1
+            continue
+        if s[i] == "]":
+            return items, i + 1
+        raise YamlError(
+            f"expected ',' or ']' in flow sequence, got {s[i]!r}", filename, lineno
+        )
+
+
+def _parse_flow_map(s, i, lineno, filename):
+    i += 1  # skip '{'
+    result = YMap()
+    i = _skip_flow_ws(s, i)
+    if i < len(s) and s[i] == "}":
+        return result, i + 1
+    while True:
+        key, i = _parse_flow_key(s, i, filename, lineno)
+        i = _skip_flow_ws(s, i)
+        if i >= len(s) or s[i] != ":":
+            raise YamlError(
+                f"expected ':' after flow mapping key {key!r}", filename, lineno
+            )
+        value, i = _parse_flow_value(s, i + 1, lineno, filename)
+        result.set(key, value, lineno)
+        i = _skip_flow_ws(s, i)
+        if i >= len(s):
+            raise YamlError("unterminated flow mapping", filename, lineno)
+        if s[i] == ",":
+            i = _skip_flow_ws(s, i + 1)
+            if i < len(s) and s[i] == "}":
+                return result, i + 1
+            continue
+        if s[i] == "}":
+            return result, i + 1
+        raise YamlError(
+            f"expected ',' or '}}' in flow mapping, got {s[i]!r}", filename, lineno
+        )

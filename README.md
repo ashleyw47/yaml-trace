@@ -95,13 +95,15 @@ actually use in practice:
 - nested block mappings
 - block sequences, including the common `- key: value` shorthand
 - plain, single-quoted, and double-quoted scalars
+- single-line flow collections, `[1, 2]` and `{a: 1, b: 2}`, including
+  nested ones like `{a: [1, 2]}`
 - `#` comments (outside of quoted strings)
 
-It does not handle anchors/aliases, tags, flow collections (`{a: 1}` /
-`[1, 2]`), or multi-document files. If a file uses those, parsing will
-either fail loudly or misread the value — it won't silently guess. That
-covers the overwhelming majority of hand-written app config, which is
-the use case this tool is for.
+It does not handle anchors/aliases, tags, multi-document files, or flow
+collections that span multiple lines. If a file uses those, parsing
+will either fail loudly or misread the value — it won't silently
+guess. That covers the overwhelming majority of hand-written app
+config, which is the use case this tool is for.
 
 ## License
 

@@ -57,11 +57,47 @@ class ScalarTests(unittest.TestCase):
         self.assertEqual(self.scalar('"hello, world: still one value"'),
                           "hello, world: still one value")
 
-    def test_flow_collections_are_opaque_strings(self):
-        # Flow collections aren't parsed yet (see README); they come back
-        # as plain scalar text rather than a list/dict or an error.
-        self.assertEqual(self.scalar("[1, 2, 3]"), "[1, 2, 3]")
-        self.assertEqual(self.scalar("{a: 1, b: 2}"), "{a: 1, b: 2}")
+    def test_flow_sequence(self):
+        self.assertEqual(self.scalar("[1, 2, 3]"), [1, 2, 3])
+
+    def test_flow_mapping(self):
+        self.assertEqual(self.scalar("{a: 1, b: 2}"), {"a": 1, "b": 2})
+
+    def test_empty_flow_collections(self):
+        self.assertEqual(self.scalar("[]"), [])
+        self.assertEqual(self.scalar("{}"), {})
+
+    def test_nested_flow_collections(self):
+        self.assertEqual(
+            self.scalar("[1, {a: [2, 3]}, {}]"),
+            [1, {"a": [2, 3]}, {}],
+        )
+
+    def test_flow_collection_with_quoted_strings(self):
+        self.assertEqual(self.scalar('["a, b", "c: d"]'), ["a, b", "c: d"])
+        self.assertEqual(self.scalar("{'k: 1': 'v, 2'}"), {"k: 1": "v, 2"})
+
+    def test_flow_value_colon_is_not_a_separator(self):
+        # Only a bare key needs ':' as a boundary; a value like a time
+        # string can contain one freely.
+        self.assertEqual(self.scalar("[08:00, 09:00]"), ["08:00", "09:00"])
+        self.assertEqual(self.scalar("{start: 08:00}"), {"start": "08:00"})
+
+    def test_flow_collection_trailing_garbage_raises(self):
+        with self.assertRaises(YamlError):
+            parse("x: [1, 2] junk\n")
+
+    def test_unterminated_flow_sequence_raises(self):
+        with self.assertRaises(YamlError):
+            parse("x: [1, 2\n")
+
+    def test_unterminated_flow_mapping_raises(self):
+        with self.assertRaises(YamlError):
+            parse("x: {a: 1\n")
+
+    def test_flow_mapping_remembers_a_single_line(self):
+        tree = parse("x: {a: 1, b: 2}\n")
+        self.assertEqual(tree["x"].lines, {"a": 1, "b": 1})
 
 
 class MappingTests(unittest.TestCase):
@@ -144,6 +180,10 @@ class SequenceTests(unittest.TestCase):
         text = "items:\n  - \n  - x\n"
         tree = parse(text)
         self.assertEqual(tree["items"], [None, "x"])
+
+    def test_flow_collection_as_list_item(self):
+        tree = parse("items:\n  - [1, 2]\n  - {a: 1}\n")
+        self.assertEqual(tree["items"], [[1, 2], {"a": 1}])
 
     def test_malformed_entry_continuation_raises(self):
         text = "items:\n  - host: a\n    justtext\n"
