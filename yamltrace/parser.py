@@ -8,6 +8,11 @@ library for a tool this small felt worse than owning the indentation
 bookkeeping ourselves, and config files rarely reach for the exotic
 corners of the spec anyway.
 
+A key repeated within the same mapping is a parse error rather than
+silent last-value-wins: a tool whose whole job is telling you where a
+value came from should not itself guess which of two definitions you
+meant.
+
 Every mapping remembers the source line of each of its keys, since that
 is the whole point of this tool: knowing not just a value but where it
 came from.
@@ -30,7 +35,13 @@ class YMap(dict):
         super().__init__()
         self.lines = {}
 
-    def set(self, key, value, lineno):
+    def set(self, key, value, lineno, filename):
+        if key in self:
+            raise YamlError(
+                f"duplicate key {key!r} (first set on line {self.lines[key]})",
+                filename,
+                lineno,
+            )
         self[key] = value
         self.lines[key] = lineno
 
@@ -165,11 +176,11 @@ def _consume_mapping_entry(target, key, value_str, lineno, cursor, indent, filen
     if value_str == "":
         nxt = cursor.peek()
         if nxt is not None and nxt[0] > indent:
-            target.set(key, _parse_block(cursor, nxt[0], filename), lineno)
+            target.set(key, _parse_block(cursor, nxt[0], filename), lineno, filename)
         else:
-            target.set(key, None, lineno)
+            target.set(key, None, lineno, filename)
     else:
-        target.set(key, _parse_value(value_str, lineno, filename), lineno)
+        target.set(key, _parse_value(value_str, lineno, filename), lineno, filename)
 
 
 def _split_key_value(content):
@@ -367,7 +378,7 @@ def _parse_flow_map(s, i, lineno, filename):
                 f"expected ':' after flow mapping key {key!r}", filename, lineno
             )
         value, i = _parse_flow_value(s, i + 1, lineno, filename)
-        result.set(key, value, lineno)
+        result.set(key, value, lineno, filename)
         i = _skip_flow_ws(s, i)
         if i >= len(s):
             raise YamlError("unterminated flow mapping", filename, lineno)

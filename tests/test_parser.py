@@ -153,6 +153,23 @@ class MappingTests(unittest.TestCase):
             parse("a:\n\tb: 1\n", filename="staging.yaml")
         self.assertEqual(str(ctx.exception), "staging.yaml:2: tabs are not allowed in indentation")
 
+    def test_duplicate_key_raises(self):
+        with self.assertRaises(YamlError) as ctx:
+            parse("a: 1\nb: 2\na: 3\n")
+        self.assertEqual(ctx.exception.lineno, 3)
+        self.assertIn("duplicate key 'a'", str(ctx.exception))
+        self.assertIn("first set on line 1", str(ctx.exception))
+
+    def test_duplicate_key_in_nested_mapping_raises(self):
+        text = "database:\n  host: a\n  host: b\n"
+        with self.assertRaises(YamlError) as ctx:
+            parse(text)
+        self.assertEqual(ctx.exception.lineno, 3)
+
+    def test_duplicate_key_in_flow_mapping_raises(self):
+        with self.assertRaises(YamlError):
+            parse("x: {a: 1, a: 2}\n")
+
 
 class SequenceTests(unittest.TestCase):
     def test_scalar_list(self):
@@ -187,6 +204,12 @@ class SequenceTests(unittest.TestCase):
 
     def test_malformed_entry_continuation_raises(self):
         text = "items:\n  - host: a\n    justtext\n"
+        with self.assertRaises(YamlError) as ctx:
+            parse(text)
+        self.assertEqual(ctx.exception.lineno, 3)
+
+    def test_duplicate_key_in_sequence_item_mapping_raises(self):
+        text = "items:\n  - host: a\n    host: b\n"
         with self.assertRaises(YamlError) as ctx:
             parse(text)
         self.assertEqual(ctx.exception.lineno, 3)

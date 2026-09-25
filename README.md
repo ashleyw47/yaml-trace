@@ -105,6 +105,10 @@ will either fail loudly or misread the value — it won't silently
 guess. That covers the overwhelming majority of hand-written app
 config, which is the use case this tool is for.
 
+A key that appears twice in the same mapping is also a parse error,
+not a silent last-one-wins: if you're asking this tool where a value
+came from, it shouldn't pick between two definitions on your behalf.
+
 ## License
 
 MIT, see LICENSE.
